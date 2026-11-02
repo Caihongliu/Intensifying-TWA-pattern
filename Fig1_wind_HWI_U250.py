@@ -17,7 +17,7 @@ import matplotlib.colors as mcolors
 warnings.filterwarnings("ignore")
 import matplotlib as mpl
 mpl.use("Agg")
-from cartopy.util import add_cyclic_point
+from cartopy.util import add_cyclic_point#去除投影中间白线
 from scipy.linalg import norm
 from scipy import stats
 from scipy.stats.mstats import ttest_ind
@@ -28,10 +28,7 @@ from cartopy.mpl.ticker import LongitudeFormatter,LatitudeFormatter
 from global_land_mask import globe
 
 
-from multiprocessing import Pool
-import math
-import time
- 
+
 def mask_land(ds, label='land', lonname='lon'):
     if lonname == 'lon':
         lat = ds.lat.data
@@ -74,32 +71,31 @@ def mask_land(ds, label='land', lonname='lon'):
 # make_map_Eurasia(ax1) 
 
 def spatial_corr(field1, field2):
-    """Spatial correlation coefficient"""
-    # flatten
+    """计算两个二维场的空间相关系数"""
+    # 展平为1维数组
     f1 = field1.flatten()
     f2 = field2.flatten()
-    # remove NaN
+    # 去除NaN值（如果有）
     mask = ~np.isnan(f1) & ~np.isnan(f2)
     f1 = f1[mask]
     f2 = f2[mask]
-    
+    # 计算相关系数
     return np.corrcoef(f1, f2)[0, 1]
 
 def pearson_significance(r, n):
-    """Student-t test"""
+    """传统t检验(忽略空间自相关）"""
     from scipy.stats import t
     t_stat = r * np.sqrt((n-2) / (1-r**2))
-    p_value = 2 * t.sf(np.abs(t_stat), df=n-2)  # two-t 
+    p_value = 2 * t.sf(np.abs(t_stat), df=n-2)  # 双尾检验
     return p_value
 
-
 def trend_result(data_3D,nt,nlat,nlon):
-    ##--##--## calculate trend --##--##--##
+    ##--##--## 计算趋势 --##--##--##
     ngrd=nlat*nlon
-    ano_grd = data_3D.values.reshape((nt, ngrd), order='F')
+    ano_grd = data_3D.reshape((nt, ngrd), order='F')
     x = np.linspace(1, nt, nt)
 
-    # construct slope and significant matrix
+    # 建立斜率和显著性数组
     ano_rate = np.empty((ngrd,))
     p_values = np.empty((ngrd,))
 
@@ -107,14 +103,14 @@ def trend_result(data_3D,nt,nlat,nlon):
     p_values[:] = np.nan
 
 
-    # for each grid point  
+    # 计算每个网格点的线性趋势和显著性
     for i in range(ngrd):
         slope, _, _, p_value, _ = stats.linregress(x, ano_grd[:, i])
         ano_rate[i] = slope
         p_values[i] = p_value
 
 
-    # return back to the (nlat, nlon)
+    # 将斜率和显著性结果重新调整为原来的网格形状
     day_shape = (nlat, nlon)
     anom_grd = ano_rate.reshape(day_shape, order='F') * 10
     p_values_grd = p_values.reshape(day_shape, order='F')
@@ -125,18 +121,22 @@ def trend_1D_result(data_1D,nt):
     slope = slope*10
     return slope 
 
-##--##--##--##--  Load temperature data --##--##--##--##
+##--##--##--##--  创建温度数据  --##--##--##--##
 
-ds1 = xr.open_dataset("/public/home/fcai/abc/2Paper_blocking/historical_Dynamic/NEW_T_dyn_therm_anom_19502023_JJA_NH.nc")
+ds1 = xr.open_dataset("/public/master/data1/home/fcai/abc/2Paper_blocking/historical_Dynamic/NEW_T_dyn_therm_anom_19502023_JJA_NH.nc")
+
 ds1.coords['lon'] = np.mod(ds1['lon'], 360)
 ds1 = ds1.reindex({ 'lon' : np.sort(ds1['lon'])})
  
 T_dyn_anom = ds1.T_dyn_anom 
+
+
+
 lat = ds1.lat.loc[0:70];   lon = ds1.lon 
 year=T_dyn_anom.time.dt.year
 month=T_dyn_anom.time.dt.month
  
-## ------------- 1. read Tdyn (1979-2023, JA)
+## ------------- 1. 读取 动态气温数据 (1979-2023, 7-8月)
 year_ind=(year>=1979)&(year<=2023)
 
 T_dyn_Jul=T_dyn_anom.where(year_ind&(month==7),drop=True)
@@ -150,13 +150,16 @@ for iyear in range(1979,2024):
     T_dyn_4D[i,31:62,:,:]=T_dyn_Aug[i*31+0:i*31+31,:,:]
    
 
-##--##--##--##--    75th percentile  --##--##--##--##
-t_th75 = np.percentile(T_dyn_4D, 75, axis=1)     
-print(np.shape(t_th75))   
+##--##--##--##--  计算每个夏天的 75 分位阈值  --##--##--##--##
+t_th75 = np.nanmean(T_dyn_4D, axis=1)    ## 计算mean
+
+# np.percentile(T_dyn_4D, 75, axis=1)    ## 计算75%分位数值
+# print(np.shape(t_th75))    ## 输出变量维度
 
 
 
-##--##--## trends --##--##--##
+
+##--##--## 计算趋势 --##--##--##
 nt = 45;nlat=71;nlon=360
 T_trend=trend_result(t_th75,nt,nlat,nlon)
 p_values_grd = T_trend[1]
@@ -168,7 +171,11 @@ anom_grd = xr.DataArray(
     dims=[ "lat", "lon"],
     coords={ "lat": lat.values , "lon": lon.values}
 )
-
+p_values_grd = xr.DataArray(
+    data=p_values_grd,
+    dims=[ "lat", "lon"],
+    coords={ "lat": lat.values , "lon": lon.values}
+)
 t_th75 = xr.DataArray(data= t_th75, dims=['year','lat','lon'],
               coords= {'year':np.linspace(1979,2023,45) ,'lat':lat.data , 'lon':lon.data})
 
@@ -176,61 +183,96 @@ t_th75 = xr.DataArray(data= t_th75, dims=['year','lat','lon'],
 
 ## ------------- 2. multi-model mean of trend in Dyn T75
 
-ds1 = xr.open_dataset("/public/home/fcai/abc/2Paper_blocking/CMIP6_data/complex_network/6_pattern/data/Dynamical_T75_model_day_JA_19792023.nc") #"New_Dynamical_T75_model_day_JA_19502023.nc"
+ds1 = xr.open_dataset("/public/master/data1/home/fcai/abc/2Paper_blocking/CMIP6_data/complex_network/6_pattern/data/Dynamical_Tmean_model_day_JA_19792023.nc") #"New_Dynamical_T75_model_day_JA_19502023.nc"
 ds1.coords['lon'] = np.mod(ds1['lon'], 360)
 ds1 = ds1.reindex({ 'lon' : np.sort(ds1['lon'])})
  
-air_75 = ds1.air_th75;print(air_75);print(air_75)
+air_mean = ds1.air_th75;print(air_mean);print(air_mean)
+
 
 Model_T_trend=np.zeros((20,71,360))
 
-##--##--## trends --##--##--##
+##--##--## 计算趋势 --##--##--##
 nt = 45;nlat=71;nlon=360
 
 for i in range(20):
-    trend=trend_result(air_75[i,:,:,:].to_numpy(),nt,nlat,nlon)
+    trend=trend_result(air_mean[i,:,:,:].to_numpy(),nt,nlat,nlon)
     Model_T_trend[i,:,:] = trend[0]
 
-# ds6 = xr.open_dataset("/public/home/fcai/abc/2Paper_blocking/Fig1/MMM_T_dyn_therm_anom_19792023_JA_NH.nc")
+# ds6 = xr.open_dataset("/public/master/data1/home/fcai/abc/2Paper_blocking/Fig1/MMM_T_dyn_therm_anom_19792023_JA_NH.nc")
 # Model_T_trend = ds6.Model_T_trend
 
 
-Model_T_trend = xr.DataArray(
-    data=Model_T_trend,
+Model_T_trend = xr.DataArray(data=Model_T_trend,
     dims=["Model", "lat", "lon"],
-    coords={"Model":range(20), "lat": air_75.lat.values , "lon": air_75.lon.values}
+    coords={"Model":range(20), "lat": air_mean.lat.values , "lon": air_mean.lon.values}
 )
 
 
-MMM_T_anom = np.nanmean(Model_T_trend,0)
+MMM_T_anom = np.mean(Model_T_trend,0)
 MMM_T_anom = xr.DataArray(
     data=MMM_T_anom,
     dims=["lat", "lon"],
-    coords={"lat": air_75.lat.values , "lon": air_75.lon.values}
+    coords={"lat": air_mean.lat.values , "lon": air_mean.lon.values}
 )
+
+# # ##--##--##--##--  写进nc文件内  --##--##--##--##
+# dss = xr.Dataset(data_vars=dict(Model_T_trend=Model_T_trend))
+# output_dir = "/public/master/data1/home/fcai/abc/2Paper_blocking/historical_Dynamic/"
+# dss.to_netcdf("/public/master/data1/home/fcai/abc/2Paper_blocking/Fig1/new_MMM_T_dyn_therm_anom_19792023_JA_NH.nc")
+
+# # -------------- 验证 --------------
+# T_test=np.zeros((20,71,360))
+# T_test=np.where(Model_T_trend>0, 1, 0)
+# T_test_Neg=np.where(Model_T_trend<0, 1, 0)
+
+
+# ####20*90%=18
+# p_t_test_pos=np.sum(T_test,0)
+# p_t_test_neg=np.sum(T_test_Neg,0)
+
+
+# -------------- 验证 --------------
+# # 审稿人的 一致
+# # -----------------------------------
+Model_sign = np.sign(Model_T_trend)
+Obser_sign = np.sign(anom_grd)
+
+# 观测每个模式是否和观测一样
+Agreement = np.where(Model_sign== np.expand_dims(Obser_sign,axis=0), 1,0)
+Agree_num = np.sum(Agreement, axis=0)
+# Agree_ratio=Agree_num/20.0
+
+
+# # from scipy.stats import binom
+# # from statsmodels.stats.multitest import fdrcorrection
+
+# # nmodel=20
+
+# # # 每个格点 得到 >=当前一致数量的概念; 每次成功概率0.5,看看他们的可能是不是随机的flunk
+# # p_value = binom.sf(Agree_num -1, nmodel,0.5)
+
+
+# # # FDR correction
+# # reject, p_fdr = fdrcorrection(p_value.flatten(), alpha=0.1)
+# # FDR_mask = reject.reshape(p_value.shape)
+
+# # # 最终 inter-model agreement & 模式和观测的一致性
+# # agreement_mask = (FDR_mask)
+
+
+
  
-# -------------- test --------------
-T_test=np.zeros((20,71,360))
-T_test=np.where(Model_T_trend>0, 1, 0)
-T_test_Neg=np.where(Model_T_trend<0, 1, 0)
 
+## ------------- 4. 四地 原温度和动态温度趋势的对比
 
-####20*90%=18
-p_t_test_pos=np.sum(T_test,0)
-p_t_test_neg=np.sum(T_test_Neg,0)
-
-
- 
- 
-
-## ------------- 4. Total T and dynamical T over four regions 
-
-
+w=np.cos(np.deg2rad(t_th75.lat))
 print(np.shape(t_th75))
-dyn_WNA = np.mean(t_th75.loc[:,42:42+12,235:235+15], axis=(1,2))  ;print(np.shape(dyn_WNA))
-dyn_EE  = np.mean(t_th75.loc[:,45:45+20,22:22+38], axis=(1,2))  ;print(np.shape(dyn_EE))
-dyn_CA  = np.mean(t_th75.loc[:,30:30+15,88:88+18], axis=(1,2)) 
-dyn_NA  = np.mean(t_th75.loc[:,58:58+11,135:135+40], axis=(1,2)) 
+
+dyn_WNA = t_th75.loc[:,40:52,235:250].weighted(w).mean(dim=("lat","lon"))
+dyn_EE  = t_th75.loc[:,45:65,18:56].weighted(w).mean(dim=("lat","lon"))
+dyn_CA  = t_th75.loc[:,33:48,88:106].weighted(w).mean(dim=("lat","lon"))
+dyn_NA  = t_th75.loc[:,58:69,135:175].weighted(w).mean(dim=("lat","lon"))
 
 nt=45
 dyn_WNA_trend = trend_1D_result(dyn_WNA.values ,nt)
@@ -242,7 +284,7 @@ dyn_NA_trend = trend_1D_result(dyn_NA.values ,nt)
 
 #raw
  
-ds2 = xr.open_dataset("/public/data2/model/fcai/data-observation/ERA5_daily/t2m/t2m.1979-01.daily.nc")
+ds2 = xr.open_dataset("/public/mgt/data2/model/fcai/data-observation/ERA5_daily/t2m/t2m.1979-01.daily.nc")
 print(ds2)
 t = ds2.t2m.loc[:,70:0,:][:,::-1,:]
 lat = t.latitude; lon = t.longitude;print(lat) 
@@ -252,27 +294,27 @@ t2m = np.zeros((45,62,np.shape(t)[1],np.shape(t)[2]))
 for iyear in range(45):
   print('iyear = ',iyear+1979)
 
-  tJuly = xr.open_dataset("/public/data2/model/fcai/data-observation/ERA5_daily/t2m/t2m."+str(iyear+1979)+"-07.daily.nc")
+  tJuly = xr.open_dataset("/public/mgt/data2/model/fcai/data-observation/ERA5_daily/t2m/t2m."+str(iyear+1979)+"-07.daily.nc")
   t2m[iyear,0:31,:,:] = tJuly.t2m.loc[:,70:0,:][:,::-1,:]
-  tAugust = xr.open_dataset("/public/data2/model/fcai/data-observation/ERA5_daily/t2m/t2m."+str(iyear+1979)+"-08.daily.nc")
+  tAugust = xr.open_dataset("/public/mgt/data2/model/fcai/data-observation/ERA5_daily/t2m/t2m."+str(iyear+1979)+"-08.daily.nc")
   t2m[iyear,31:62,:,:] = tAugust.t2m.loc[:,70:0,:][:,::-1,:]
   tJuly.close(); tAugust.close()
 
  
 
-##--##--##--##-- calculate 75th percentile for each summer  --##--##--##--##
-t2m_th75 = np.percentile(t2m, 75, axis=1)    
-print(np.shape(t2m_th75))    
+##--##--##--##--  计算每个夏天的 75 分位阈值  --##--##--##--##
+t2m_th75 = np.mean(t2m, axis=1) #np.percentile(t2m, 75, axis=1)    ## 计算75%分位数值
+print(np.shape(t2m_th75))    ## 输出变量维度
 
 t2m_th75 = xr.DataArray(data= t2m_th75, dims=['year','lat','lon'],
               coords= {'year':np.linspace(1979,2023,45) ,'lat':lat.data , 'lon':lon.data})
 
-
+w=np.cos(np.deg2rad(t2m_th75.lat))
 # Raw
-T_WNA = np.mean(t2m_th75.loc[:,42:42+12,235:235+15],axis=(1,2))  
-T_EE  = np.mean(t2m_th75.loc[:,45:45+20,22:22+38],axis=(1,2)) 
-T_CA  = np.mean(t2m_th75.loc[:,30:30+15,88:88+18],axis=(1,2))
-T_NA  = np.mean(t2m_th75.loc[:,58:58+11,135:135+40],axis=(1,2))
+T_WNA = t2m_th75.loc[:,40:52,235:250].weighted(w).mean(dim=("lat","lon"))
+T_EE  = t2m_th75.loc[:,45:65,18:56].weighted(w).mean(dim=("lat","lon"))
+T_CA  = t2m_th75.loc[:,33:48,88:106].weighted(w).mean(dim=("lat","lon"))
+T_NA  = t2m_th75.loc[:,58:69,135:175].weighted(w).mean(dim=("lat","lon"))
 
 nt=45
 T_WNA_trend = trend_1D_result(T_WNA ,nt)
@@ -295,25 +337,29 @@ print("      rate",str(dyn_NA_trend/T_NA_trend ))
 # Model
 
 
-Model_dyn_WNA = np.mean(Model_T_trend.loc[:,42:42+12,235:235+15], axis=(1,2))   # only trend left
-Model_dyn_EE  = np.mean(Model_T_trend.loc[:,45:45+20,22:22+38], axis=(1,2))
-Model_dyn_CA  = np.mean(Model_T_trend.loc[:,30:30+15,88:88+18], axis=(1,2)) 
-Model_dyn_NA  = np.mean(Model_T_trend.loc[:,58:58+11,135:135+40], axis=(1,2)) 
+w = np.cos(np.deg2rad(Model_T_trend.lat))
+
+Model_dyn_WNA = Model_T_trend.loc[:,40:52,235:250].weighted(w).mean(dim=("lat","lon"))
+Model_dyn_EE  = Model_T_trend.loc[:,45:65,18:56].weighted(w).mean(dim=("lat","lon"))
+Model_dyn_CA  = Model_T_trend.loc[:,33:48,88:106].weighted(w).mean(dim=("lat","lon"))
+Model_dyn_NA  = Model_T_trend.loc[:,58:69,135:175].weighted(w).mean(dim=("lat","lon"))
 
 
 #raw
  
-# ds5 = xr.open_dataset("/public/home/fcai/abc/2Paper_blocking/historical_Dynamic/Model_raw_T75_19502014_JA.nc")
-ds5 = xr.open_dataset("/public/home/fcai/abc/2Paper_blocking/historical_Dynamic/Model_raw_T75_19792023_JA.nc")
+# ds5 = xr.open_dataset("/public/master/data1/home/fcai/abc/2Paper_blocking/historical_Dynamic/Model_raw_T75_19502014_JA.nc")
+ds5 = xr.open_dataset("/public/master/data1/home/fcai/abc/2Paper_blocking/historical_Dynamic/Model_raw_T75_19792023_JA.nc")
 Model_raw_th75 = ds5.t2m_th75 
 lat = ds5.lat; lon = ds5.lon
 
 
 # Raw
-Model_T_WNA = np.mean(Model_raw_th75.loc[:,:,42:42+12,-125:-110],axis=(2,3))  
-Model_T_EE  = np.mean(Model_raw_th75.loc[:,:,45:45+20,22:22+38],axis=(2,3)) 
-Model_T_CA  = np.mean(Model_raw_th75.loc[:,:,30:30+15,88:88+18],axis=(2,3))
-Model_T_NA  = np.mean(Model_raw_th75.loc[:,:,58:58+11,135:135+40],axis=(2,3))
+w = np.cos(np.deg2rad(Model_raw_th75.lat))
+
+Model_T_WNA = Model_raw_th75.loc[:,:,40:52,-125:-110].weighted(w).mean(dim=("lat","lon"))
+Model_T_EE  = Model_raw_th75.loc[:,:,45:65,18:56].weighted(w).mean(dim=("lat","lon"))
+Model_T_CA  = Model_raw_th75.loc[:,:,33:48,88:106].weighted(w).mean(dim=("lat","lon"))
+Model_T_NA  = Model_raw_th75.loc[:,:,58:69,135:175].weighted(w).mean(dim=("lat","lon"))
 
 
 nt=45
@@ -322,7 +368,7 @@ Model_raw_EE_trend =np.zeros((20))
 Model_raw_CA_trend =np.zeros((20))
 Model_raw_NA_trend =np.zeros((20))
 
-print( Model_raw_NA_trend)
+ 
 
 for i in range(20):
     Model_raw_WNA_trend[i] = trend_1D_result(Model_T_WNA[i,:] ,nt)
@@ -331,8 +377,8 @@ for i in range(20):
     Model_raw_NA_trend[i] = trend_1D_result(Model_T_NA[i,:] ,nt)
 
 
-#---------------------- Plot function ------------------------
-with open('/public/home/fcai/abc/data/CN-border-La.dat') as src:
+#----------------------分割线（画图函数）------------------------
+with open('/public/master/data1/home/fcai/abc/data/CN-border-La.dat') as src:
     context = src.read()
     blocks = [cnt for cnt in context.split('>') if len(cnt) > 0]
     borders = [np.fromstring(block, dtype=float, sep=' ') for block in blocks]
@@ -361,7 +407,7 @@ def make_map_Eurasia(ax):
     ax.set_yticks(np.arange(box[2], box[3]+ystep, ystep),crs=ccrs.PlateCarree())
     ax.yaxis.set_major_formatter(LatitudeFormatter())
     
-    ax.xaxis.set_major_formatter(LongitudeFormatter(zero_direction_label =False))
+    ax.xaxis.set_major_formatter(LongitudeFormatter(zero_direction_label =False))#经度0不加标识
     ax.tick_params(which='major', 
                     direction='out', 
                     length=8,
@@ -378,25 +424,34 @@ def make_map_Eurasia(ax):
 def make_box(x,y,ax,colors,title,lat1,lat2):
     # add some docoration
     ax.plot(x, y,color = colors)
+    # 坐标
     ax.tick_params(axis='both',labelsize=8, length = 3,direction = 'in', width=0.49)
-
+    # # 画横线
     ax.axhspan(lat1, lat2, facecolor='#e8e8e8', alpha=0.7)
+
+    # # 画纵线
     ax.axvline(x=0,linestyle='--',color='black',linewidth=1 )
+    # # ax4.axvline(x=2022,linestyle='--',color='gray')
+    # # 垂直填充
+    # ax4.axvspan(2007, 2022, facecolor='#e8e8e8', alpha=0.7)
     ax.set_facecolor('none')
-    
+    # # 注释
+    # ax.annotate(title, (2, 25), fontsize=8)
+    # ax4.legend()
     ax.set_ylim(10,80)
     ax.set_yticks(np.arange(10, 91, 20))
+    # ax.set_xlim(-5,5)
     ax.spines['right'].set_visible(False)
     ax.spines['top'].set_visible(False)
     ax.set_title(title, loc='left', color='black', fontsize=8)
 
-#---------------------- Plotting ------------------------
+#---------------------- 绘制趋势结果 ------------------------
 import matplotlib as mpl
 mpl.rcParams['hatch.color'] = 'white'
 
-#colorbar
+#设置色标的
 cbar_kwargs = {
-    'orientation': 'horizontal',  
+    'orientation': 'horizontal',  # 改为水平方向
     'label': '°C/decade',
     'ticks': np.arange(-0.4, 0.4 + 0.2, 0.2),
     'pad': 0.03,
@@ -405,27 +460,30 @@ cbar_kwargs = {
     'extendfrac': 0.1  
 }
 
-#level
+#设置画数据的精度，这里设置了从-30到30度，按1度画温度
 levels = np.arange(-0.4, 0.4 + 0.05, 0.05)
 
-# 'RdYlGn'
+# 创建一个自定义的颜色映射（例如：'RdYlGn'）
 cmap = plt.get_cmap('RdBu')
 cmap_colors = cmap(np.arange(cmap.N))
 cmap_reversed = mcolors.LinearSegmentedColormap.from_list('Reversed', cmap_colors[::-1])
 
 
-global_t_composite2, cycle_lon = add_cyclic_point(anom_grd, coord=lon)  
+global_t_composite2, cycle_lon = add_cyclic_point(anom_grd, coord=lon)   ## 给数据加上 360度经度 位置的数据
 mappable = ax1.contourf(global_t_composite2[:,:],transform=ccrs.PlateCarree(),cmap=cmap_reversed,levels=levels,extend='both') #subplot_kw={'projection':projection,'frameon':False},extend='both')
 
+# 在画图之前设置 hatch 的线宽（决定点的大小）
+plt.rcParams['hatch.linewidth'] = 1.2  # 默认是 1.0，调大让点变大
+
 p_t_value = p_values_grd
-c1p = ax1.contourf( p_t_value[:,:], levels =[0,0.1,1],hatches=[ '.....',None],colors="none", transform=ccrs.PlateCarree())
+c1p = ax1.contourf( p_t_value[:,:], levels =[0,0.1,1],hatches=['....',None], colors=[(1,1,1,0),(1,1,1,0)],transform=ccrs.PlateCarree())
 
 for collection in c1p.collections:
-    collection.set_edgecolor('white')
-for collection in c1p.collections:
+    collection.set_edgecolor('none')
     collection.set_linewidth(0)
+    collection.set_rasterized(True)
 
- 
+
 
 
 ax1.axis('off') 
@@ -437,7 +495,7 @@ cbar = plt.colorbar(mappable,cmap=cmap_reversed,norm=norm,  cax=new_position,**c
 cbar.outline.set_color('none')
 cbar.update_ticks()
 cbar.ax.xaxis.set_tick_params(labelsize=9)
-ax1.set_title(' Trends of T$_{dyn}$ in JA',loc='center',color='black',fontsize=13,y=1.03)
+ax1.set_title(' Trends of T$_{cir}$ in JA',loc='center',color='black',fontsize=13,y=1.03)
 ax1.text(0.06,1.1, 'a', fontsize=15.5, fontweight='bold', fontfamily='sans-serif',transform=ax1.transAxes)
 
 ax1.set_xlabel(' ')
@@ -451,30 +509,40 @@ ax1.set_aspect(1.5)
 
 
 MMM_T_anom = mask_land(MMM_T_anom,'ocean','lon')
-global_t_composite3, cycle_lon = add_cyclic_point(MMM_T_anom, coord=lon)  
+global_t_composite3, cycle_lon = add_cyclic_point(MMM_T_anom, coord=lon)   ## 给数据加上 360度经度 位置的数据
 mappable = ax2.contourf(global_t_composite3[:,:],transform=ccrs.PlateCarree(),cmap=cmap_reversed,levels=levels,extend='both') #subplot_kw={'projection':projection,'frameon':False},extend='both')
 
-p_t_value = p_t_test_pos
-c2p = ax2.contourf( p_t_value[:,:], levels =[0,13.5,20],hatches=[ None,'.....'],colors="none", transform=ccrs.PlateCarree())
+
+# p_t_value = p_t_test_pos
+# c2p = ax2.contourf( p_t_value[:,:], levels =[0,13.5,20],hatches=[ None,'....'],colors="none", transform=ccrs.PlateCarree())
+# agreement_plot = np.where(Agree_ratio, 1, np.nan)
+c2p = ax2.contourf(Agree_num, levels=[0,13.5,20],hatches=[None,'....'],colors=[(1,1,1,0),(1,1,1,0)], transform=ccrs.PlateCarree())
+
 
 for collection in c2p.collections:
     collection.set_edgecolor('white')
-for collection in c2p.collections:
     collection.set_linewidth(0)
-
-c3p = ax2.contourf( p_t_test_neg[:,:], levels =[0,13.5,20],hatches=[ None,'.....'],colors="none", transform=ccrs.PlateCarree())
-
-for collection in c3p.collections:
-    collection.set_edgecolor('white')
-for collection in c3p.collections:
-    collection.set_linewidth(0)
+    collection.set_rasterized(True)
  
-ax2.axis('off') 
+
+
+# p_t_value = p_t_test_neg
+# c2p = ax2.contourf( p_t_value[:,:], levels =[0,13.5,20],hatches=[ None,'....'],colors="none", transform=ccrs.PlateCarree())
+
+# for collection in c2p.collections:
+#     collection.set_edgecolor('white')
+# for collection in c2p.collections:
+#     collection.set_linewidth(0)
+
+ax2.axis('off')
 
 ax2.add_feature(cfeature.COASTLINE,  linewidth=0.5 , edgecolor='black')
 ax2.add_feature(cfeature.BORDERS, linestyle = 'dotted',lw = 0.35, edgecolor='black')
-ax2.set_title(' Multi-model mean of trends in T$_{dyn}$',loc='center',color='black',fontsize=13,y=1.03)
-ax2.text(0.06,1.1, 'b', fontsize=15.5, fontweight='bold', fontfamily='sans-serif',transform=ax2.transAxes)
+ax2.set_title(' Multi-model mean of trends in T$_{cir}$',loc='center',color='black',fontsize=13,y=1.03)
+ax2.text(0.06,1.1, 'c', fontsize=15.5, fontweight='bold', fontfamily='sans-serif',transform=ax2.transAxes)
+
+ax2.text(0.51,0.3, 'stippling: ', fontsize=12.5,  fontfamily='sans-serif',transform=ax2.transAxes)
+ax2.text(0.51,0.17, '≥14 models = ERA5 sign', fontsize=12,  fontfamily='sans-serif',transform=ax2.transAxes)
 
 
 ############
@@ -484,20 +552,21 @@ print("figure1 & figure 2 similarity:",Spatial_r)
 n =len(global_t_composite2.data.flatten())
 p = pearson_significance(Spatial_r,n)
 print(f"NA Spatial correlation: {Spatial_r:.2f}")
+print(f"Naive p-value: {p:.8f} (可能低估真实p值)")
 
 ax2.set_xlabel(' ')
 ax2.set_ylabel(' ')
 ax2.set_aspect(1.5)
  
-#square markers (NE US)
+# 绘制一个矩形框(NE US)
 
 
 for k in range(1,3):
 
     # West NA
     locals()['rectangle' + str(k)] = Rectangle(
-        (235, 42),  #  (longitude, latitude)
-        15, 12, #  (longitude, latitude)
+        (235, 40),  # 左下角坐标 (longitude, latitude)
+        15, 12, # 宽度和高度 (longitude, latitude)
         linewidth=1.5,edgecolor='black',
         facecolor='none',linestyle='--',
         transform=ccrs.PlateCarree()
@@ -507,7 +576,7 @@ for k in range(1,3):
 
     #East Europe
     locals()['rectangle' + str(k)] = Rectangle(
-        (22, 45),
+        (18, 45),
         38, 20, 
         linewidth=1.3,edgecolor='black',
         facecolor='none',linestyle='--',
@@ -518,8 +587,8 @@ for k in range(1,3):
 
     #Central Asia
     locals()['rectangle' + str(k)] = Rectangle(
-        (88, 30),  #  (longitude, latitude)
-        18, 15, #  (longitude, latitude)
+        (88, 33),  # 左下角坐标 (longitude, latitude)
+        18, 15, # 宽度和高度 (longitude, latitude)
         linewidth=1.3,edgecolor='black',
         facecolor='none',linestyle='--',
         transform=ccrs.PlateCarree()
@@ -529,7 +598,7 @@ for k in range(1,3):
     #North Asia
     locals()['rectangle' + str(k)] = Rectangle(
         (135, 58), 
-        40, 11, #  (longitude, latitude)
+        40, 11, # 宽度和高度 (longitude, latitude)
         linewidth=1.3,edgecolor='black',
         facecolor='none',linestyle='--',
         transform=ccrs.PlateCarree()
@@ -537,8 +606,6 @@ for k in range(1,3):
     locals()['ax' + str(k)].add_patch(locals()['rectangle' + str(k)]) 
 
 
-
- 
 
 
 ###----------------------------------------------------------------
@@ -575,7 +642,7 @@ print(Model_dyn_NA)
 
 box1 = ax22.boxplot(data_raw.dropna(), widths=0.4,positions=x1, patch_artist=True,showmeans=True,
             boxprops={"facecolor": "#fce2d2",
-                      "edgecolor": "none",
+                      "edgecolor": "#ec9374",
                       "linewidth": 0.5},
             medianprops={"color": "#ec9374", "linewidth": 2},
             meanprops={'marker':'o',
@@ -590,7 +657,7 @@ box1 = ax22.boxplot(data_raw.dropna(), widths=0.4,positions=x1, patch_artist=Tru
 
 box2 = ax22.boxplot(data_dyn.dropna(),widths=0.4,positions=x2,patch_artist=True,showmeans=True,
             boxprops={"facecolor": "#dae9f2",
-                      "edgecolor": "none",
+                      "edgecolor": "#569fc9",
                       "linewidth": 0.5},
             medianprops={"color": "#569fc9", "linewidth": 2},
             meanprops={'marker':'o',
@@ -609,15 +676,18 @@ city = ["EE","NWC","ES","WNA"]
 ax22.set_xticks([1.5,4.5,7.5,10.5],city,fontsize=12)
 ax22.set_xticklabels(city)  #,rotation=30)
 ax22.set_title('Temperature trends',loc='center',color='black',fontsize=13,y=1.01)
-ax22.text(-0.115,1.02, 'c', fontsize=15.5, fontweight='bold', fontfamily='sans-serif',transform=ax22.transAxes)
+ax22.text(-0.115,1.05, 'b', fontsize=15.5, fontweight='bold', fontfamily='sans-serif',transform=ax22.transAxes)
      
 ax22.axhline(y=0 , color='k', linestyle='--',linewidth=1.5,zorder=0)
-# ax22.set_ylim(-0.2,0.5)
+ax22.set_ylim(-0.2,1.2)
 ax22.set_ylabel(' T (°C/decade)',fontsize=13)
 ax22.tick_params(axis='both', which='major', labelsize=11)
- 
-ax22.legend(handles=[box1['boxes'][0],box2['boxes'][0],box3,box4],labels=['20 model Total','20 model Dyn','ERA5 Total','ERA5 Dyn'], frameon=False)
-# box1['boxes'][0],
 
-plt.savefig("/public/home/fcai/abc/2Paper_blocking/Final_figures/Fig1_75_HW_trend.pdf", dpi=300, bbox_inches='tight')
+# 给箱体添加图例，每类箱线图中取第一个颜色块用于代表图例
+# ax22 = plt.gca() #返回坐标轴
+ax22.legend(handles=[box1['boxes'][0],box2['boxes'][0],box3,box4],labels=['20 model Total','20 model Cir','ERA5 Total','ERA5 Cir'], frameon=False)
+# ax22.legend(handles=[box1['boxes'][0],box2['boxes'][0],box3,box4],labels=['20 model Total','20 model Cir','ERA5 Total','ERA5 Cir'], frameon=False)
+
+
+plt.savefig("/public/master/data1/home/fcai/abc/2Paper_blocking/Final_figures/Fig1_75_HW_trend.pdf", dpi=500, bbox_inches='tight')
 plt.show()
