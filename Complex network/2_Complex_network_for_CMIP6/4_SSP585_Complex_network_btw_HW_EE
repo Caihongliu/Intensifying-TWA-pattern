@@ -1,0 +1,61 @@
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import warnings
+warnings.filterwarnings("ignore")
+import matplotlib as mpl
+mpl.use("Agg")
+import sys
+sys.path.append("/public/home/fcai/abc/2Paper_jet/Fig2/Fig2_new/Function")
+from Function_Complex_network import computing_link_bwt_two_array,significant_links_at_each_grid, get_significant_links
+
+
+
+#----------------------分割线（至此，地图地图加载完毕）------------------------
+# 定义模型名称数组
+model_name=("ACCESS-CM2","CanESM5","EC-Earth3","EC-Earth3-Veg",
+            "FGOALS-g3","GFDL-CM4","HadGEM3-GC31-LL",\
+           "HadGEM3-GC31-MM","INM-CM4-8","INM-CM5-0","IPSL-CM6A-LR",\
+            "KACE-1-0-G","MIROC6","MPI-ESM1-2-HR","MPI-ESM1-2-LR",\
+            "MRI-ESM2-0","NorESM2-LM","NorESM2-MM","TaiESM1","UKESM1-0-LL") #24s
+ 
+special_models = [
+    "HadGEM3-GC31-LL",
+    "HadGEM3-GC31-MM",
+    "KACE-1-0-G",
+    "UKESM1-0-LL"
+]
+
+
+
+##--##--##--##--  创建 Heatwave 数据  --##--##--##--##
+
+ds1 = xr.open_dataset("/public/home/fcai/abc/2Paper_blocking/CMIP6_data/complex_network/1_threshold/SSP585_T_01_day_JA_55_99.nc")
+ds2 = xr.open_dataset("/public/home/fcai/abc/2Paper_blocking/CMIP6_data/complex_network/1_threshold/SSP585_Easterly_01_day_JA_55_99.nc")
+lat = ds1.lat.loc[-21:89]
+lon = ds1.lon
+
+imodel=0
+for model in model_name:
+    print(imodel)
+    if model in special_models:
+       
+        heatwave = ds1.heatwave.loc[imodel,:,:60,-21:89,:]
+        easterly_day_data = ds2.easterly_day_data.loc[imodel,:,:60,-21:89,:]
+
+    else:
+        heatwave = ds1.heatwave.loc[imodel,:,:,-21:89,:]
+        easterly_day_data = ds2.easterly_day_data.loc[imodel,:,:,-21:89,:]
+
+
+    computing_link_bwt_two_array(heatwave, easterly_day_data, 45, lat, lon,
+                                "/public/home/fcai/abc/2Paper_blocking/CMIP6_data/complex_network/5_SSP585_U300negative_network/Easterly_network/")
+
+    significant_links_at_each_grid(heatwave, easterly_day_data,lat,lon,\
+                    "/public/home/fcai/abc/2Paper_jet/Fig2/1_threshold/45y_62d_matrix99.5_network_per10.nc",\
+                    f"/public/home/fcai/abc/2Paper_blocking/CMIP6_data/complex_network/5_SSP585_U300negative_network/full/JA_{model}_U300Negative_matrix4D_995.nc")
+    get_significant_links("/public/home/fcai/abc/2Paper_blocking/CMIP6_data/complex_network/5_SSP585_U300negative_network/Easterly_network/",
+                        f"/public/home/fcai/abc/2Paper_blocking/CMIP6_data/complex_network/5_SSP585_U300negative_network/full/JA_{model}_U300Negative_matrix4D_995.nc"
+                        ,lat,lon,45,f"/public/home/fcai/abc/2Paper_blocking/CMIP6_data/complex_network/5_SSP585_U300negative_network/significant/{model}_U300Negative_significant_995.nc")
+    imodel +=1

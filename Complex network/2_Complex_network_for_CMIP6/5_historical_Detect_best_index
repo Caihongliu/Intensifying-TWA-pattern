@@ -1,0 +1,710 @@
+from cartopy.util import add_cyclic_point
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+import pandas as pd
+from copy import copy
+from cartopy.mpl.gridliner import LATITUDE_FORMATTER, LONGITUDE_FORMATTER
+import shapely.geometry as sgeom
+import matplotlib.colorbar as colorbar
+from matplotlib.colors import ListedColormap,LinearSegmentedColormap
+from matplotlib.patches import Rectangle
+import warnings
+import matplotlib.colors as mcolors
+warnings.filterwarnings("ignore")
+import matplotlib as mpl
+mpl.use("Agg")
+from cartopy.util import add_cyclic_point#去除投影中间白线
+from scipy.linalg import norm
+from scipy import stats
+from scipy.stats.mstats import ttest_ind
+from scipy.signal import detrend
+import cartopy
+import cartopy.crs as ccrs
+from cartopy.mpl.ticker import LongitudeFormatter,LatitudeFormatter
+from cartopy.util import add_cyclic_point
+import numpy as np
+import xarray as xr
+import matplotlib.pyplot as plt
+import cartopy.crs as ccrs
+import cartopy.feature as cfeature
+from matplotlib.patches import Rectangle
+import warnings
+import matplotlib.colors as mcolors
+warnings.filterwarnings("ignore")
+import matplotlib as mpl
+mpl.use("Agg")
+from cartopy.util import add_cyclic_point#去除投影中间白线
+from scipy.linalg import norm
+from scipy import stats
+import cartopy.crs as ccrs
+from cartopy.mpl.ticker import LongitudeFormatter,LatitudeFormatter
+from scipy import signal
+import os
+import glob
+#-*- coding:utf-8 –*-
+
+def trend_result(data_3D,nt,nlat,nlon):
+    ##--##--## 计算趋势 --##--##--##
+    ngrd=nlat*nlon
+    ano_grd = data_3D.values.reshape((nt, ngrd), order='F')
+    x = np.linspace(1, nt, nt)
+
+    # 建立斜率和显著性数组
+    ano_rate = np.empty((ngrd,))
+    p_values = np.empty((ngrd,))
+
+    ano_rate[:] = np.nan
+    p_values[:] = np.nan
+
+
+    # 计算每个网格点的线性趋势和显著性
+    for i in range(ngrd):
+        slope, _, _, p_value, _ = stats.linregress(x, ano_grd[:, i])
+        ano_rate[i] = slope
+        p_values[i] = p_value
+
+
+    # 将斜率和显著性结果重新调整为原来的网格形状
+    day_shape = (nlat, nlon)
+    anom_grd = ano_rate.reshape(day_shape, order='F') * 10
+    p_values_grd = p_values.reshape(day_shape, order='F')
+    return anom_grd,p_values_grd
+
+def trend_1D_result(data_1D,nt):
+    slope, _, _, _, _ = stats.linregress(np.linspace(1, nt, nt), data_1D)
+    slope = slope*10
+    return slope 
+
+
+def standardization(data):
+    mu = np.mean(data, axis=0)
+    sigma = np.std(data, axis=0)
+    return (data - mu) / sigma
+
+def find_max_patch(data,lon1, lat_vals, lat_win=6, lon_win=20):
+    max_val = -np.inf
+    best_patch = None
+
+    
+    for lat_start in range(min(lat_vals), max(lat_vals) - lat_win + 2, 2):
+        for lon_start in range((lon1-40), (lon1+40) - lon_win + 2, 2):
+
+            lat_slice = np.arange(lat_start, lat_start + lat_win+2,2)
+            lon_slice = np.arange(lon_start % 360, (lon_start + lon_win+2) % 360,2)
+
+            # print(lat_slice);print(lon_slice)
+            patch = data.sel(lat2=lat_slice, lon2=lon_slice)
+            patch_mean = patch.mean().item()
+            
+            if patch_mean > max_val:
+                max_val = patch_mean
+                best_patch_lat_slice=lat_slice
+                best_patch_lon_slice=lon_slice
+    # print(best_patch_lat_slice)
+    # print(best_patch_lon_slice)
+    # print(max_val)
+                
+    return best_patch_lat_slice,best_patch_lon_slice , max_val
+
+
+# 定义模型名称数组
+model_name=("ACCESS-CM2","CanESM5","EC-Earth3","EC-Earth3-Veg",
+            "FGOALS-g3","GFDL-CM4","HadGEM3-GC31-LL",\
+            "HadGEM3-GC31-MM","INM-CM4-8","INM-CM5-0","IPSL-CM6A-LR",\
+            "KACE-1-0-G","MIROC6","MPI-ESM1-2-HR","MPI-ESM1-2-LR",\
+            "MRI-ESM2-0","NorESM2-LM","NorESM2-MM","TaiESM1","UKESM1-0-LL") #24s
+ 
+
+input_base_dir1="/public/home/fcai/abc/2Paper_blocking/CMIP6_data/2x2/U300_daily/"
+output_base_dir="/public/home/fcai/abc/2Paper_blocking/CMIP6_data/complex_network/1_threshold/"
+
+Model_triple_index = np.zeros((len(model_name),45,28+1,180))
+ 
+ 
+
+# 循环model name
+imodel=0
+for model in model_name:
+
+    print(imodel)
+    
+    pattern1=os.path.join(input_base_dir1,f"2x2_250_JA-ua_{model}_historical_ssp585_1979-2023_NH.nc"); print(pattern1)
+    file1= glob.glob(pattern1)
+    ds1 = xr.open_dataset(file1[0])
+    u = ds1.ua.sel(latitude=slice(-40,90), longitude=slice(0,360))[:,0,:,:] ;print(np.shape(u))
+
+    ua = u.sel(time=ds1['time'].dt.year.isin(range(1979,2023+1))) ;print(ua)
+    lat = ds1.latitude.sel(latitude=slice(-40,90))
+    lon = ds1.longitude
+
+    # 按年和日重新组织数据
+    ua_grouped = ua.groupby("time.year")
+    n_years = 45; n_days = int(np.shape(ua)[0]/n_years); print(n_days)
+    n_lat, n_lon = len(ua.latitude), len(ua.longitude)
+
+    data = np.zeros((n_years, n_days, n_lat, n_lon))
+    for i , (year, group) in enumerate(ua_grouped):
+        data[i] = group.values
+
+    ## ------------- 1. 计算 U250异常 和 标准差  
+    ua_year_run_90 = np.mean(data[:,:,:,:],1)
+    u_JJA_clm = np.mean(ua_year_run_90[2:32,:,:],0)
+    tile_u_JJA_clm =np.tile(u_JJA_clm ,(45,1,1)) 
+    u_ano = np.subtract(ua_year_run_90,tile_u_JJA_clm) 
+
+    u_ano = xr.DataArray(data= u_ano, dims=['time','lat','lon' ],
+                coords= {'time':range(45),'lat':lat.data ,'lon':lon.data })
+    print(np.shape(u_ano))
+
+
+    ## ------------- b. 复杂网络
+    ds0=xr.open_dataset(f"/public/home/fcai/abc/2Paper_blocking/CMIP6_data/complex_network/7_U300positive_network_Final/significant/{model}_U300Positive_significant_995.nc")
+    
+    print(ds0)
+    # 调整经度坐标
+    for lon_name in ['lon1', 'lon2']:
+        ds0['longitude_adjusted'] = xr.where(ds0[lon_name] < 0, ds0[lon_name] + 360, ds0[lon_name])
+        ds0 = ds0.swap_dims({lon_name: 'longitude_adjusted'}).sel(
+            **{'longitude_adjusted': sorted(ds0.longitude_adjusted)}
+        ).drop(lon_name)
+        ds0 = ds0.rename({'longitude_adjusted': lon_name})
+
+    lat=ds0.lat1; lon=ds0.lon1
+    network=ds0.significant_99
+    print(network)
+    
+
+    ds1=xr.open_dataset(f"/public/home/fcai/abc/2Paper_blocking/CMIP6_data/complex_network/8_U300negative_network_Final/significant/{model}_U300Negative_significant_995.nc")
+    
+    # 调整经度坐标
+    for lon_name in ['lon1', 'lon2']:
+        ds1['longitude_adjusted'] = xr.where(ds1[lon_name] < 0, ds1[lon_name] + 360, ds1[lon_name])
+        ds1 = ds1.swap_dims({lon_name: 'longitude_adjusted'}).sel(
+            **{'longitude_adjusted': sorted(ds1.longitude_adjusted)}
+        ).drop(lon_name)
+        ds1 = ds1.rename({'longitude_adjusted': lon_name})
+
+    network_easterly=ds1.significant_99
+ 
+
+    # ------------- c. 构建三极子指数
+
+
+    triple_index = np.zeros((45,28+1,np.shape(u)[2]))
+
+    for ilat in range(12,68+2,2):   #69
+        print(ilat)
+        
+        for ilon in range(0,358+2,2):    # 359
+            
+            # lon 要环绕处理   1, 3, 5, ..., 359  
+            # lon1_val = (ilon // 2) * 2 + 1
+
+            lat_range = np.arange(ilat-2,ilat+18+2,2)   # 不只是单数       # lat 要环绕处理
+            # lat_range_val = [(x // 2) * 2  for x in lat_range]
+            lat2_range_val = list(set(lat_range)) 
+
+            lon_range = np.arange(ilon-40,ilon+40+2,2) %360  # 不只是单数       # lon 要环绕处理
+            # lon_range_val = [(x // 2) * 2  for x in lon_range]
+            lon2_range_val = list(set(lon_range)) 
+                                                                
+
+            # 1. 北边西风点
+            patch_north = network.sel(lat1=ilat, lon1=ilon, lat2=lat2_range_val, lon2=lon2_range_val) 
+            north_best_lat, north_best_lon , north_max_val = find_max_patch(patch_north,lon1=ilon,lat_vals=lat2_range_val)
+        
+            # 东风区：纬度 ilat-15 到 ilat+5
+            lat_range_east = np.arange(ilat - 16, ilat + 4+2,2)
+            # lat_range_east_val = [(x // 2) * 2 + 1 for x in lat_range_east]
+            lat2_range_east_val = list(set(lat_range_east)) 
+
+            # 2. 中间东风
+            patch_center = network_easterly.sel(lat1=ilat, lon1=ilon, lat2=lat2_range_east_val, lon2 = lon2_range_val) 
+            center_best_lat, center_best_lon, center_max_val = find_max_patch(patch_center, lon1=ilon,lat_vals=lat2_range_east_val)
+
+
+            # 南边东风：纬度 ilat-30 到 ilat-15
+            lat_range_center = np.arange(ilat - 32, ilat - 12+2,2)
+            # lat_range_center_val = [(x // 2) * 2 + 1 for x in lat_range_center]
+            lat2_range_center_val = list(set(lat_range_center)) 
+
+            # 3. 南边西风
+            patch_south = network.sel(lat1=ilat, lon1=ilon, lat2=lat2_range_center_val, lon2 = lon2_range_val)                                        
+            south_best_lat, south_best_lon, south_max_val = find_max_patch(patch_south, lon1=ilon,lat_vals=lat2_range_center_val)
+            # print(south_best_lat)
+    
+            triple_index[:,(ilat-12)//2, (ilon)//2] =np.mean(u_ano.sel(lat=north_best_lat,lon=north_best_lon),axis=(1,2))\
+                        + np.mean(u_ano.sel(lat=south_best_lat,lon=south_best_lon),axis=(1,2))\
+                        - 2* np.mean(u_ano.sel(lat=center_best_lat,lon=center_best_lon),axis=(1,2))
+        
+
+#
+    triple_index_scale = standardization(triple_index)
+
+    Model_triple_index[imodel,:,:,:] = triple_index_scale
+    imodel +=1
+
+
+##--##--##-- 存储 --##--##--##
+tripole = xr.DataArray(data= Model_triple_index, dims=['Model','year','lat','lon'],
+            coords= {'Model':range(20),'year':range(45) , 'lat':range(12,68+2,2),'lon':range(0,358+2,2)})
+
+ds3 = xr.Dataset(data_vars= dict(tripole = tripole))
+ds3.to_netcdf("/public/home/fcai/abc/2Paper_blocking/Final_figures/Revision_Fig1/standize_th995_historical_Model_tripole_wind_index_7923.nc")
+ds3.close()
+exit()
+
+
+
+
+
+
+
+
+# del network
+
+ds3=xr.open_dataset("/public/home/fcai/abc/2Paper_blocking/Fig4/Dect_best_point/tripole_wind_index_based_on_automatic_finding.nc")
+lat1=ds3.lat; lon1=ds3.lon
+triple_index_scale=ds3.tripole 
+print(triple_index_scale)
+
+## ------------- c. 计算趋势 
+nt = 45;nlat=len(lat1);nlon= len(lon1)
+U_result=trend_result(triple_index_scale,nt,nlat,nlon)
+u_p_values_grd = U_result[1]
+u_anom_grd = U_result[0]
+
+
+
+
+# ## ------------- 2. explained variance
+from scipy.stats import pearsonr
+
+##--##--##--##--  a. 输入Dyn 75th 数据  --##--##--##--##
+
+ds1 = xr.open_dataset("/public/home/fcai/abc/2Paper_blocking/Fig4/T_dyn_therm_anom_19792023_JJA_NH_daily2x2.nc")
+ds1.coords['lon'] = np.mod(ds1['lon'], 360)
+ds1 = ds1.reindex({ 'lon' : np.sort(ds1['lon'])})
+print(ds1)
+ 
+T_dyn_anom = ds1.T_dyn_anom.loc[:,25:69,:] 
+lat = ds1.lat.loc[25:69];   lon = ds1.lon 
+year=T_dyn_anom.time.dt.year
+month=T_dyn_anom.time.dt.month
+ 
+## ------------- b. 读取 动态气温数据 (1979-2023, 7-8月)
+year_ind=(year>=1979)&(year<=2023)
+
+T_dyn_Jul=T_dyn_anom.where(year_ind&(month==7),drop=True)
+T_dyn_Aug=T_dyn_anom.where(year_ind&(month==8),drop=True)
+
+T_dyn_4D=np.zeros((45,62,nlat,nlon))
+
+for iyear in range(1979,2024):
+    i=iyear-1979
+    T_dyn_4D[i,0:31,:,:]=T_dyn_Jul[i*31+0:i*31+31,:,:]
+    T_dyn_4D[i,31:62,:,:]=T_dyn_Aug[i*31+0:i*31+31,:,:]
+   
+
+##--##--##--##--  计算每个夏天的 75 分位阈值  --##--##--##--##
+t_th75 = np.percentile(T_dyn_4D, 75, axis=1)   ;print(np.shape(t_th75)) ## 计算75%分位数值
+t_th75 = xr.DataArray(data= t_th75, dims=['year','lat','lon'],
+              coords= {'year':np.linspace(1979,2023,45) ,'lat':lat1 , 'lon':lon1})
+
+##--##--## 计算趋势 --##--##--##
+# nt = 45;nlat=46;nlon=360
+T_trend=trend_result(t_th75,nt,nlat,nlon)
+ 
+Dyn_trend = T_trend[0]
+Dyn_trend = np.where(Dyn_trend==0,np.nan,Dyn_trend )
+
+Dyn_trend = xr.DataArray(
+    data=Dyn_trend,
+    dims=[ "lat", "lon"],
+    coords={ "lat": lat1.values , "lon": lon1.values}
+)
+
+print(t_th75)
+
+
+
+## ------------- d. 求相关系数
+ngrd=nlat*nlon;nt=45
+x = t_th75.values.reshape((nt, ngrd), order='F')*10
+y = triple_index_scale.values.reshape((nt, ngrd), order='F')
+
+# 建立斜率和显著性数组
+correlation = np.empty((ngrd))
+p_values = np.empty((ngrd))
+
+correlation[:] = np.nan
+p_values[:] = np.nan
+
+
+# 计算每个网格点的线性趋势和显著性
+for i in range(ngrd):
+    r, p_value = pearsonr(x[:,i], y[:,i])
+    correlation[i] = r
+    p_values[i] = p_value
+
+
+# 将斜率和显著性结果重新调整为原来的网格形状
+day_shape = (nlat, nlon)
+corre_anom_grd = correlation.reshape(day_shape, order='F')
+corre_p_values_grd = p_values.reshape(day_shape, order='F')
+
+ 
+
+
+## ------------- 3. Estimated trend
+t_th75 = np.where( t_th75==0.0,np.nan,t_th75   )
+print(np.shape(t_th75))    ## 输出变量维度
+
+t_th75 = xr.DataArray(data= t_th75, dims=['year','lat','lon'],
+              coords= {'year':np.linspace(1979,2023,45) ,'lat':lat1.data , 'lon':lon1.data})
+
+##--##--## 计算趋势 --##--##--##
+nt = 45
+T_trend=trend_result(t_th75,nt,nlat,nlon)
+t_p_values_grd = T_trend[1]
+t_anom_grd = T_trend[0]
+
+# 求回归系数
+ngrd=nlat*nlon; nt=45
+x = t_th75.values.reshape((nt, ngrd), order='F'); print(np.shape(x))
+y = triple_index_scale.values.reshape((nt, ngrd), order='F')
+
+# 建立斜率和显著性数组
+regression = np.empty((ngrd))
+p_values = np.empty((ngrd))
+
+regression[:] = np.nan
+p_values[:] = np.nan
+
+
+# 计算每个网格点的线性趋势和显著性
+for i in range(ngrd):
+
+    if np.all(x[:, i] == x[0, i]):
+        print(f"Identical x values in column {i}")
+    slope, _, _, p_value, _ = stats.linregress(x[:,i], y[:,i])
+    regression[i] = slope
+    p_values[i] = p_value
+
+
+# 将斜率和显著性结果重新调整为原来的网格形状
+day_shape = (nlat, nlon)
+anom_grd = regression.reshape(day_shape, order='F')
+
+
+
+
+
+
+
+## ------------- 5. 求Estimated trend
+
+test = np.empty((ngrd))
+Estimated_trend= u_anom_grd *anom_grd 
+test = np.where(((Estimated_trend>0) & (t_anom_grd>0)) | ((Estimated_trend<0) & (t_anom_grd<0)),1,0 )
+# 多条件时condition，&表示与，|表示或
+# test = np.where(test==0,np.nan,test )
+print(Estimated_trend)
+
+percentage = Estimated_trend/Dyn_trend
+percentage = xr.DataArray(
+    data=percentage,
+    dims=[ "lat", "lon"],
+    coords={ "lat": lat.values , "lon": lon.values}
+)
+
+ 
+#----------------------分割线（画图函数）------------------------
+with open('/public/home/fcai/abc/data/CN-border-La.dat') as src:
+    context = src.read()
+    blocks = [cnt for cnt in context.split('>') if len(cnt) > 0]
+    borders = [np.fromstring(block, dtype=float, sep=' ') for block in blocks]
+
+
+# Create a figure and axis
+# fig = plt.figure(figsize=[8, 12],frameon=True)
+# ax1 = fig.add_axes([0, 0.7, 0.9, 0.7], projection=ccrs.PlateCarree() )
+# ax2 = fig.add_axes([0.0, 0.4, 0.9, 0.7], projection=ccrs.PlateCarree() )
+# ax3 = fig.add_axes([0.0, 0.1, 0.9, 0.7], projection=ccrs.PlateCarree() )
+ 
+projection = ccrs.Robinson(central_longitude=150)
+
+fig = plt.figure(figsize=[8, 12],frameon=True,dpi=300)
+ax1 = fig.add_axes([0, 0.7, 0.9, 0.7], projection=projection )
+ax2 = fig.add_axes([0.0, 0.5, 0.9, 0.7], projection=projection )
+ax3 = fig.add_axes([0.0, 0.3, 0.9, 0.7], projection=projection )
+ 
+ 
+# # prepare 
+box = [-180, 180, 25, 65]  
+scale = '50m'            
+xstep, ystep = 90, 20
+
+def make_map_Eurasia(ax):
+    ax.set_extent(box, crs=ccrs.PlateCarree())
+    ax.set_xticks(np.arange(box[0],box[1]+xstep, xstep),crs=ccrs.PlateCarree())
+    ax.set_yticks(np.arange(box[2], box[3]+ystep, ystep),crs=ccrs.PlateCarree())
+    ax.yaxis.set_major_formatter(LatitudeFormatter())
+    
+    ax.xaxis.set_major_formatter(LongitudeFormatter(zero_direction_label =False))#经度0不加标识
+    ax.tick_params(which='major', 
+                    direction='out', 
+                    length=4,
+                    width=0.99, 
+                    pad=3, 
+                    labelsize=10,
+                    bottom=True, left=True, right=False, top=False)
+    ax.add_feature(cfeature.COASTLINE,  linewidth=0.4 , edgecolor='black')
+    ax.add_feature(cfeature.BORDERS, linestyle = 'dotted',lw = 0.35, edgecolor='black')
+    return ax
+
+# make_map_Eurasia(ax1) 
+# make_map_Eurasia(ax2) 
+# make_map_Eurasia(ax3) 
+#---------------------- 绘制趋势结果 ------------------------
+
+
+#设置色标的
+cbar_kwargs = {
+    'orientation': 'horizontal',  # 改为水平方向
+    'label': '',
+    'ticks': np.arange(-0.6, 0.6 + 0.2, 0.2),
+    'pad': 0.05,
+    'shrink': 0.65,
+    'extend': 'both',
+    'extendfrac': 0.1  
+}
+
+#设置画数据的精度，这里设置了从-60到60度，按1度画温度
+levels = np.arange(-0.6,  0.6 + 0.1, 0.1)
+Colors=('#2c0248','#59207f','#8d72ac','#b5add6','#dcddef','#ffffff','#ffffff','#fde1b5','#ffb95f','#e78511','#af5703','#75370c')
+
+u_anom_grd = xr.DataArray(data= u_anom_grd, dims=['lat','lon' ],
+            coords= {'lat':range(25,69+2,2),'lon':range(1,359+2,2)})
+
+
+global_t_composite2, cycle_lon = add_cyclic_point(u_anom_grd, coord=lon)   ## 给数据加上 360度经度 位置的数据
+mappable = ax1.contourf(range(1,359+2+2,2),range(25,69+2,2),global_t_composite2,transform=ccrs.PlateCarree(),colors=Colors,levels=levels,extend='both')
+
+p_t_value = u_p_values_grd
+c1p = ax1.contourf( range(1,359+2,2),range(25,69+2,2),p_t_value[:,:], levels =[0,0.1,1],hatches=[ '....',None],colors="none", transform=ccrs.PlateCarree())
+
+
+for collection in c1p.collections:
+    collection.set_edgecolor('white')
+for collection in c1p.collections:
+    collection.set_linewidth(0)
+
+ 
+new_position = fig.add_axes([0.95, 0.99,0.015, 0.12]) 
+cb= fig.colorbar(mappable, norm=norm,  cax=new_position, label='m/s/decade')
+cb.ax.xaxis.set_tick_params(labelsize=9)
+ax1.set_title('a. Trend in U JA (standard triple index) ',loc='left',color='black',fontsize=12,y=1.03)
+ax1.set_title("90%", loc="right", color='black',fontsize=12,y=1.03)
+   
+ax1.set_xlabel(' ')
+ax1.set_ylabel(' ')
+ax1.set_aspect(1.5)
+
+
+ax1.axis('off') 
+ax1.add_feature(cfeature.COASTLINE,  linewidth=0.5 , edgecolor='black')
+ax1.add_feature(cfeature.BORDERS, linestyle = 'dotted',lw = 0.35, edgecolor='black')
+cb.outline.set_color('none')
+cb.update_ticks()
+cb.ax.xaxis.set_tick_params(labelsize=9)
+
+
+# #---------------------- 2. 绘制趋势结果 ------------------------
+
+
+#设置色标的
+cbar_kwargs = {
+    'orientation': 'horizontal',  # 改为水平方向
+    'label': '',
+    'ticks': [0.0,0.1,0.2,0.3,0.4,0.5,0.6,0.7],
+    'pad': 0.05,
+    'shrink': 0.65,
+    'extend': 'both',
+    'extendfrac': 0.1  
+}
+
+#设置画数据的精度，这里设置了从-60到60度，按1度画温度
+levels = np.arange(0.0,  0.7 + 0.1, 0.1)
+Colors=('#fef5b2','#ffdf82','#fdb851','#fd8c3c','#fa4727','#d8141e','#a20027')
+
+
+corre_anom_grd2 = xr.DataArray(data= corre_anom_grd*corre_anom_grd, dims=['lat','lon' ],
+            coords= {'lat':lat1,'lon':lon1})
+
+# corre_anom_weights = corre_anom_grd2 * np.tile(weights, (360,1)).T
+# print(np.shape(u_weighted))
+
+global_t_composite2, cycle_lon = add_cyclic_point(corre_anom_grd2, coord=lon)   ## 给数据加上 360度经度 位置的数据
+mappable2 = ax2.contourf(range(1,359+2+2,2),lat1,global_t_composite2,transform=ccrs.PlateCarree(),colors=Colors,levels=levels,extend='both')
+
+p_t_value = corre_p_values_grd
+c2p = ax2.contourf( range(1,359+2,2),lat1,p_t_value[:,:], levels =[0,0.01,1],hatches=[ '////',None],colors="none", transform=ccrs.PlateCarree())
+
+for collection in c2p.collections:
+    collection.set_edgecolor('yellow')
+for collection in c2p.collections:
+    collection.set_linewidth(0)
+
+
+# ax1.axis('off')    
+new_position = fig.add_axes([0.95, 0.78,0.015, 0.12]) 
+cb= fig.colorbar(mappable2, norm=norm,  cax=new_position, label='R\u00b2')
+
+# cbar.outline.set_color('none')
+# cbar.update_ticks()
+cb.ax.xaxis.set_tick_params(labelsize=9)
+ax2.set_title('b. Explained variance of triple index to Dyn 75th',loc='left',color='black',fontsize=12,y=1.03)
+ax2.set_title("99%", loc="right", color='black',fontsize=12,y=1.03)
+ax2.set_xlabel(' ')
+ax2.set_ylabel(' ')
+ax2.set_aspect(1.5)
+
+
+ax2.axis('off') 
+ax2.add_feature(cfeature.COASTLINE,  linewidth=0.5 , edgecolor='black')
+ax2.add_feature(cfeature.BORDERS, linestyle = 'dotted',lw = 0.35, edgecolor='black')
+cb.outline.set_color('none')
+cb.update_ticks()
+cb.ax.xaxis.set_tick_params(labelsize=9)
+
+
+
+#---------------------- 3. 绘制趋势结果 ------------------------
+
+#设置色标的
+cbar_kwargs = {
+    'orientation': 'vertical',  # 改为水平方向
+    'label': '°C/decade',
+    'ticks': [-0.4,-0.2,0,0.2,0.4],
+    'pad': 0.03,
+    'shrink': 0.55,
+    'extend': 'both',
+    'extendfrac': 0.1,
+    'label':'°C/decades'  
+}
+
+#设置画数据的精度，这里设置了从-30到30度，按1度画温度
+levels = [-0.4,-0.3,-0.2,-0.1,0,0.1,0.2,0.3,0.4]
+# levels = [x *100 for x in levels]
+T_Colors=('#1f62a7','#6bacd0','#a2cde3','#bddaea','#edf2f5','#fce2d2','#f7bb9e','#e0785f','#cb4a43','#9f1228') #,'#9c0a21')
+
+# 创建一个自定义的颜色映射（例如：'RdYlGn'）
+cmap = plt.get_cmap('RdBu')
+cmap_colors = cmap(np.arange(cmap.N))
+cmap_reversed = mcolors.LinearSegmentedColormap.from_list('Reversed', cmap_colors[::-1])
+
+
+Estimated_trend_grd = xr.DataArray(data= Estimated_trend, dims=['lat','lon' ],
+            coords= {'lat':lat1,'lon':lon1})
+
+# Estimated_trend_weights = Estimated_trend_grd * np.tile(weights, (360,1)).T
+ 
+global_t_composite3, cycle_lon = add_cyclic_point(Estimated_trend_grd, coord=lon)   ## 给数据加上 360度经度 位置的数据
+mappable3 = ax3.contourf(range(1,359+2+2,2),lat1,global_t_composite3,transform=ccrs.PlateCarree(),colors=T_Colors,levels=levels,extend='both')
+ 
+c3p = ax3.contourf( range(1,359+2,2),lat1,test, levels =[0,0.01,1],hatches=[None, '....'],colors="none", transform=ccrs.PlateCarree())
+
+
+for collection in c3p.collections:
+    collection.set_edgecolor('white')
+for collection in c3p.collections:
+    collection.set_linewidth(0)
+
+
+
+# ax1.axis('off')    
+new_position = fig.add_axes([0.95, 0.58,0.015, 0.12]) 
+cb= plt.colorbar(mappable3,cmap=cmap_reversed,norm=norm,  cax=new_position,**cbar_kwargs)
+# cbar.outline.set_color('none')
+# cbar.update_ticks()
+cb.ax.xaxis.set_tick_params(labelsize=9)
+ax3.set_title('c. Estimated trend of Dyn 75th',loc='left',color='black',fontsize=12,y=1.03)
+ax3.set_title("same signal", loc="right", color='black',fontsize=12,y=1.03)  
+ax3.set_xlabel(' ')
+ax3.set_ylabel(' ')
+ax3.set_aspect(1.5)
+ 
+
+
+
+
+ax3.axis('off') 
+ax3.add_feature(cfeature.COASTLINE,  linewidth=0.5 , edgecolor='black')
+ax3.add_feature(cfeature.BORDERS, linestyle = 'dotted',lw = 0.35, edgecolor='black')
+cb.outline.set_color('none')
+cb.update_ticks()
+cb.ax.xaxis.set_tick_params(labelsize=9)
+
+
+
+
+
+
+
+
+
+# 绘制一个矩形框(NE US)
+
+
+for k in range(1,4):
+
+    # West NA
+    locals()['rectangle' + str(k)] = Rectangle(
+        (235, 42),  # 左下角坐标 (longitude, latitude)
+        15, 12, # 宽度和高度 (longitude, latitude)
+        linewidth=1.5,edgecolor='black',
+        facecolor='none',
+        transform=ccrs.PlateCarree()
+    )
+    locals()['ax' + str(k)].add_patch(locals()['rectangle' + str(k)]) 
+
+
+    #East Europe
+    locals()['rectangle' + str(k)] = Rectangle(
+        (18, 45),
+        40, 20, 
+        linewidth=1.3,edgecolor='black',
+        facecolor='none',
+        transform=ccrs.PlateCarree()
+    )
+    locals()['ax' + str(k)].add_patch(locals()['rectangle' + str(k)])
+
+
+    #Central Asia
+    locals()['rectangle' + str(k)] = Rectangle(
+        (88, 30),  # 左下角坐标 (longitude, latitude)
+        18, 15, # 宽度和高度 (longitude, latitude)
+        linewidth=1.3,edgecolor='black',
+        facecolor='none',
+        transform=ccrs.PlateCarree()
+    )
+    locals()['ax' + str(k)].add_patch(locals()['rectangle' + str(k)])  
+
+    #North Asia
+    locals()['rectangle' + str(k)] = Rectangle(
+        (135, 58), 
+        40, 11, # 宽度和高度 (longitude, latitude)
+        linewidth=1.3,edgecolor='black',
+        facecolor='none',
+        transform=ccrs.PlateCarree()
+    )
+    locals()['ax' + str(k)].add_patch(locals()['rectangle' + str(k)]) 
+
+
+plt.savefig("/public/home/fcai/abc/2Paper_blocking/Fig4/1_Fig4_UJA_trend1.png", dpi=300, bbox_inches='tight')
+plt.show()
+ 
